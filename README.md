@@ -131,3 +131,6 @@ Run the basic tests using the project environment:
 ```
 
 The current test suite covers mapping/configuration logic and does not substitute for testing with a physical DualShock 4 on Zorin OS.
+
+### Note for Ubuntu 24.04 / Zorin OS 18 Users
+If you get a black screen or a `Trace/breakpoint trap` error, the `run.sh` script has been updated to force the Qt backend and disable sandboxing. This resolves the known WebKit2GTK and QtWebEngine crashes on this specific OS version.
