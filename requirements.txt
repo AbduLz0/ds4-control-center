@@ -1,2 +1,2 @@
 pywebview>=5.0,<7
-evdev<2,>=1.7
+evdev>=1.4

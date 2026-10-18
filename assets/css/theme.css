@@ -1,0 +1,27 @@
+/* Design tokens. Every colour in the app comes from here so themes are a few lines. */
+:root, body[data-theme="midnight"] {
+  --bg: #0b0e13; --bg-raise: #10141b; --panel: #141922; --panel-2: #191f2a; --line: #252c39; --line-2: #333d4f;
+  --text: #e8ecf3; --muted: #8e98aa; --dim: #5d687b;
+  --accent: #3ea6ff; --accent-ink: #04121f; --accent-soft: rgba(62, 166, 255, .14); --accent-glow: rgba(62, 166, 255, .55);
+  --backdrop: radial-gradient(900px 420px at 72% -8%, rgba(62, 166, 255, .10), transparent 70%);
+  --ok: #3fdc9a; --warn: #f4b95b; --bad: #ff5f77;
+  --pad-top: #2b3342; --pad-bot: #12161e; --pad-edge: #465169;
+}
+body[data-theme="graphite"] {
+  --bg: #0e0f11; --bg-raise: #131416; --panel: #181a1d; --panel-2: #1e2125; --line: #2a2d32; --line-2: #3a3e45;
+  --accent: #c9d3e0; --accent-ink: #0e0f11; --accent-soft: rgba(201, 211, 224, .12); --accent-glow: rgba(201, 211, 224, .4);
+  --backdrop: radial-gradient(900px 420px at 72% -8%, rgba(201, 211, 224, .07), transparent 70%);
+  --pad-top: #30343b; --pad-bot: #131518; --pad-edge: #4d535d;
+}
+body[data-theme="aurora"] {
+  --bg: #0a0f0f; --bg-raise: #0f1514; --panel: #121a19; --panel-2: #172120; --line: #22302e; --line-2: #2f423f;
+  --accent: #35d9c2; --accent-ink: #03150f; --accent-soft: rgba(53, 217, 194, .13); --accent-glow: rgba(53, 217, 194, .5);
+  --backdrop: radial-gradient(900px 420px at 72% -8%, rgba(53, 217, 194, .09), transparent 70%);
+  --pad-top: #263836; --pad-bot: #0f1716; --pad-edge: #3f5753;
+}
+body[data-theme="plasma"] {
+  --bg: #0d0b13; --bg-raise: #120f1a; --panel: #171421; --panel-2: #1d1929; --line: #2a2538; --line-2: #3a3350;
+  --accent: #a68bff; --accent-ink: #120a2a; --accent-soft: rgba(166, 139, 255, .14); --accent-glow: rgba(166, 139, 255, .5);
+  --backdrop: radial-gradient(900px 420px at 72% -8%, rgba(166, 139, 255, .11), transparent 70%);
+  --pad-top: #2e2a40; --pad-bot: #131019; --pad-edge: #4c4666;
+}

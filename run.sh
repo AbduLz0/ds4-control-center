@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Fixes for Zorin OS 18 / Ubuntu 24.04 WebKit/QtWebEngine crashes
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export WEBKIT_DISABLE_DMABUF_RENDERER=1
 export QTWEBENGINE_DISABLE_SANDBOX=1

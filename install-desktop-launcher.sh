@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
+# Adds an application-menu entry for the current user only.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-mkdir -p "$HOME/.local/share/applications"
-cat > "$HOME/.local/share/applications/ds4-control-center.desktop" <<EOF
+DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$DIR"
+cat > "$DIR/ds4-control-center.desktop" <<DESK
 [Desktop Entry]
 Type=Application
 Name=DS4 Control Center
-Comment=DualShock 4 controller dashboard for Linux
-Exec=$ROOT/run.sh
+Comment=DualShock 4 dashboard: live tester, Bluetooth, diagnostics, Steam shortcuts
+Exec="$ROOT/run.sh"
+Icon=$ROOT/assets/icon.svg
 Terminal=false
 Categories=Utility;Game;
+Keywords=controller;gamepad;dualshock;ps4;bluetooth;
 StartupNotify=true
-EOF
-chmod 644 "$HOME/.local/share/applications/ds4-control-center.desktop"
-echo "Desktop launcher installed for current user."
-echo "If you move the project directory, rerun this script."
+DESK
+chmod 644 "$DIR/ds4-control-center.desktop"
+command -v update-desktop-database >/dev/null && update-desktop-database "$DIR" 2>/dev/null || true
+echo "Launcher installed for your user. If you move this folder, run this script again."
