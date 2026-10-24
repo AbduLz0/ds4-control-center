@@ -12,9 +12,13 @@ from . import __version__, lightbar, notify, power
 from .bluetooth import MAC_RE, Bluetooth
 from .controller import ControllerMonitor
 from .diagnostics import STATE_DIR, EventLog
-from .settings import SettingsStore
+from .games import UniversalGames
+from .input_map import (BUTTONS as MAP_BUTTONS, BUTTON_LABELS, STICK_MODE_LABELS, STICK_MODES,
+                        InputMapper, clean_mapping, preset_mapping, public_presets, uinput_reason)
+from .settings import PROJECT_ROOT, SettingsStore
 from .steam import Steam
 from .system import os_summary, report_text, run_checks
+from .virtual_pad import VirtualPad
 
 
 def _res(ok: bool, message: str = '', **extra) -> dict:
@@ -91,6 +95,7 @@ class _Watcher(threading.Thread):
         self._idle_fired_for = None  # connection timestamp an idle disconnect was already sent for
         self._was_connected = None
         self.running_app = None
+        self.running_game = None
 
     def stop(self):
         self._stop_evt.set()
@@ -119,8 +124,15 @@ class _Watcher(threading.Thread):
                 notify.send('Controller disconnected', 'The controller is no longer available.', 'low')
         self._was_connected = live
 
-        # running Steam game (read-only) for automatic profiles
+        # running game (read-only) for automatic profiles, from Steam plus desktop/Lutris/manual entries
         self.running_app = api._steam.running_appid() if cfg['auto_profile'] else None
+        self.running_game = None
+        if cfg['auto_profile']:
+            try:
+                library = api._library()['games']
+                self.running_game = api._games.running(self.running_app, library)
+            except Exception as e:
+                api._log.add('system', 'Could not check the running game: %s' % e)
 
         if not live:
             self._alert.armed = True
@@ -160,10 +172,16 @@ class Api:
         self._log.enabled = self._settings.get()['diagnostic_logging']
         self._bt = Bluetooth(self._log)
         self._steam = Steam()
+        self._games = UniversalGames(self._steam, self._log)
+        self._mapper = InputMapper(self._log)
+        self._vpad = VirtualPad(self._log)
         self._monitor = ControllerMonitor(self._log, on_event=self._on_controller)
+        self._monitor.add_output(self._mapper)
+        self._monitor.add_output(self._vpad)
         self._reconnector = _Reconnector(self._settings, self._monitor, self._bt, self._log)
         self._watcher = _Watcher(self)
         self._monitor.start()
+        self._apply_input_settings(self._settings.get())
         self._reconnector.start()
         self._watcher.start()
 
@@ -182,11 +200,46 @@ class Api:
             return _res(False, 'The kernel does not expose a light bar for this controller.')
         return lightbar.apply(led, color)
 
+    def _sync_grab(self):
+        """Reserve the physical pad when the app is presenting a virtual one or a keyboard mapper grabs it."""
+        cfg = self._settings.get()
+        mapping = cfg.get('mapping') if isinstance(cfg, dict) else None
+        mapping = mapping if isinstance(mapping, dict) else {}
+        want = bool(self._vpad.enabled) or (self._mapper.enabled and mapping.get('grab') is True)
+        self._monitor.set_grab(want)
+
+    def _apply_input_settings(self, data: dict):
+        mapping = data.get('mapping') if isinstance(data, dict) else None
+        mapping = mapping if isinstance(mapping, dict) else None
+        if mapping is not None:
+            self._mapper.configure(mapping)
+            if mapping.get('enabled') is True:
+                res = self._mapper.enable(mapping)
+                if not res['ok']:
+                    self._log.add('system', res['message'])
+            else:
+                self._mapper.disable()
+        if data.get('virtual_pad_enabled') is True:
+            res = self._vpad.enable()
+            if not res['ok']:
+                self._log.add('system', res['message'])
+        else:
+            self._vpad.disable()
+        self._sync_grab()
+
+    def _library(self, force: bool = False) -> dict:
+        cfg = self._settings.get()
+        steam_games = self._steam.library(force)
+        return self._games.library(steam_games, cfg['custom_games'],
+                                   cfg['scan_desktop_games'], cfg['scan_lutris_games'], force)
+
     def _shutdown(self):
         self._watcher.stop()
         self._reconnector.stop()
         self._bt.cancel()
         self._monitor.stop()
+        self._mapper.shutdown()
+        self._vpad.shutdown()
 
     # -- app --------------------------------------------------------------------
     def get_boot(self):
@@ -206,6 +259,11 @@ class Api:
         st['reconnect'] = self._reconnector.snapshot(cfg['reconnect_attempts'])
         st['reconnect']['enabled'] = cfg['auto_reconnect']
         st['steam_app'] = self._watcher.running_app
+        st['running_game'] = self._watcher.running_game
+        st['virtual_pad'] = self._vpad.status()
+        st['virtual_pad']['grab'] = st.get('grab')
+        st['virtual_pad']['desired'] = cfg.get('virtual_pad_enabled', False)
+        st['mapping'] = {'enabled': self._mapper.enabled, 'available': not uinput_reason()}
         st['drain_rate'] = self._monitor.battery_history.drain_rate()
         return st
 
@@ -217,13 +275,22 @@ class Api:
         try:
             data, changed = self._settings.update(partial or {})
             self._log.enabled = data['diagnostic_logging']
-            return _res(True, 'Saved.', settings=data, changed=sorted(changed))
+            if changed & {'mapping', 'virtual_pad_enabled'}:
+                self._apply_input_settings(data)
+            if changed & {'scan_desktop_games', 'scan_lutris_games'}:
+                self._games.invalidate()
+            return _res(True, 'Saved.', settings=data, changed=sorted(changed),
+                        virtual_pad=self._vpad.status())
         except OSError as e:
             return _res(False, 'Could not write settings: %s' % e)
 
     def reset_settings(self):
         try:
-            return _res(True, 'Defaults restored.', settings=self._settings.reset())
+            data = self._settings.reset()
+            self._log.enabled = data['diagnostic_logging']
+            self._apply_input_settings(data)
+            self._games.invalidate()
+            return _res(True, 'Defaults restored.', settings=data)
         except OSError as e:
             return _res(False, str(e))
 
@@ -384,7 +451,171 @@ class Api:
         self._settings.remove_profile(appid)
         return _res(True, 'Profile removed.', settings=self._settings.get())
 
+    # -- universal games ------------------------------------------------------------------
+    def get_games(self, force=False):
+        try:
+            result = dict(self._library(bool(force)))
+            result['running'] = self._watcher.running_game
+            result['steam'] = self._steam.status()
+            return result
+        except OSError as e:
+            return {'games': [], 'counts': {}, 'sources': [], 'running': None,
+                    'error': 'Could not read the game libraries: %s' % e}
+
+    def launch_any_game(self, game_id):
+        game_id = str(game_id or '').strip()
+        if game_id.startswith('steam:'):
+            return self._steam.launch_game(game_id[6:])
+        if game_id.isdigit():
+            return self._steam.launch_game(game_id)
+        library = self._library()['games']
+        game = next((g for g in library if g['id'] == game_id), None)
+        if game is None:
+            return _res(False, 'That game is no longer in the library. Rescan and try again.')
+        return self._games.launch(game)
+
+    def add_custom_game(self, name, command):
+        try:
+            entry = self._settings.add_custom_game(name, command)
+        except ValueError as e:
+            return _res(False, str(e))
+        except OSError as e:
+            return _res(False, 'Could not save the game: %s' % e)
+        self._games.invalidate()
+        return _res(True, 'Added %s.' % entry['name'], settings=self._settings.get(), game=entry)
+
+    def remove_custom_game(self, game_id):
+        try:
+            removed = self._settings.remove_custom_game(game_id)
+        except ValueError as e:
+            return _res(False, str(e))
+        except OSError as e:
+            return _res(False, 'Could not save the change: %s' % e)
+        self._games.invalidate()
+        return _res(True, 'Removed.' if removed else 'That game was not in the list.',
+                    settings=self._settings.get())
+
+    # -- keyboard / mouse mapping --------------------------------------------------------
+    def get_mapping(self):
+        cfg = self._settings.get()
+        status = self._mapper.status()
+        status['controller'] = self._monitor.connected
+        return {
+            'mapping': cfg['mapping'],
+            'status': status,
+            'presets': public_presets(),
+            'available': not uinput_reason(),
+            'reason': uinput_reason(),
+            'buttons': [{'id': button, 'label': BUTTON_LABELS[button]} for button in MAP_BUTTONS],
+            'stick_modes': [{'id': mode, 'label': STICK_MODE_LABELS[mode]} for mode in STICK_MODES],
+            'script': str(PROJECT_ROOT / 'scripts' / 'enable-uinput.sh'),
+        }
+
+    def _mapping_response(self, message: str, ok: bool = True) -> dict:
+        return _res(ok, message, settings=self._settings.get(), mapping=self.get_mapping())
+
+    def save_mapping(self, partial):
+        if not isinstance(partial, dict):
+            return _res(False, 'Invalid mapping.')
+        cfg = self._settings.get()['mapping']
+        merged = dict(cfg)
+        for key, value in partial.items():
+            if key == 'bindings' and isinstance(value, dict):
+                merged['bindings'] = dict(cfg['bindings'])
+                merged['bindings'].update(value)
+            elif key in cfg:
+                merged[key] = value
+        cleaned = clean_mapping(merged)
+        try:
+            self._settings.update({'mapping': cleaned})
+        except OSError as e:
+            return _res(False, 'Could not save the mapping: %s' % e)
+        self._mapper.configure(cleaned)
+        if cleaned['enabled']:
+            res = self._mapper.enable(cleaned)
+            if not res['ok']:
+                return self._mapping_response(res['message'], ok=False)
+        else:
+            self._mapper.disable()
+        self._sync_grab()
+        return self._mapping_response('Mapping saved.')
+
+    def apply_mapping_preset(self, preset):
+        if preset not in [p['id'] for p in public_presets()]:
+            return _res(False, 'Unknown preset.')
+        cfg = self._settings.get()['mapping']
+        base = preset_mapping(preset)
+        merged = dict(cfg)
+        merged.update({'preset': preset, 'bindings': base['bindings'],
+                       'left_stick': base['left_stick'], 'right_stick': base['right_stick']})
+        cleaned = clean_mapping(merged)
+        try:
+            self._settings.update({'mapping': cleaned})
+        except OSError as e:
+            return _res(False, 'Could not save the preset: %s' % e)
+        self._mapper.configure(cleaned)
+        if cleaned['enabled']:
+            res = self._mapper.enable(cleaned)
+            if not res['ok']:
+                return self._mapping_response(res['message'], ok=False)
+        self._sync_grab()
+        return self._mapping_response('Applied the %s preset.' % preset)
+
+    def set_mapping_enabled(self, on):
+        cfg = self._settings.get()['mapping']
+        if on:
+            updated = dict(cfg)
+            updated['enabled'] = True
+            res = self._mapper.enable(updated)
+            if not res['ok']:
+                disabled = dict(updated)
+                disabled['enabled'] = False
+                try:
+                    self._settings.update({'mapping': disabled})
+                except OSError:
+                    pass
+                return self._mapping_response(res['message'], ok=False)
+        else:
+            updated = dict(cfg)
+            updated['enabled'] = False
+            self._mapper.disable()
+        try:
+            self._settings.update({'mapping': clean_mapping(updated)})
+        except OSError as e:
+            return _res(False, 'Could not save the mapping: %s' % e)
+        self._sync_grab()
+        return self._mapping_response('Keyboard and mouse mode is on.' if on
+                                      else 'Keyboard and mouse mode is off.')
+
+    def get_virtual_pad(self):
+        status = self._vpad.status()
+        status['grab'] = self._monitor.status().get('grab', {})
+        status['desired'] = self._settings.get().get('virtual_pad_enabled', False)
+        return {'status': status, 'enabled': self._vpad.enabled, 'available': status['available']}
+
+    def set_virtual_pad(self, on):
+        if on:
+            res = self._vpad.enable()
+            if not res['ok']:
+                return _res(False, res['message'], virtual_pad=self._vpad.status())
+        else:
+            self._vpad.disable()
+        try:
+            self._settings.update({'virtual_pad_enabled': bool(on)})
+        except OSError as e:
+            return _res(False, 'Could not save the setting: %s' % e)
+        self._sync_grab()
+        return _res(True, 'The virtual Xbox pad is on.' if on else 'The virtual Xbox pad is off.',
+                    virtual_pad=self._vpad.status(), settings=self._settings.get())
+
     # -- troubleshooting -------------------------------------------------------------------
     def system_check(self):
-        checks = run_checks(self._monitor.status(), self._bt.status(), self._steam.status())
+        cfg = self._settings.get()
+        mapping = self._mapper.status()
+        mapping['desired'] = cfg['mapping']['enabled']
+        vpad = self._vpad.status()
+        vpad['desired'] = cfg['virtual_pad_enabled']
+        checks = run_checks(self._monitor.status(), self._bt.status(), self._steam.status(),
+                            uinput={'available': not uinput_reason(), 'reason': uinput_reason()},
+                            mapping=mapping, vpad=vpad)
         return {'checks': checks, 'report': report_text(checks)}

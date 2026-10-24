@@ -328,3 +328,53 @@ body.no-anim *,body.no-anim *::before,body.no-anim *::after{transition:none!impo
 kbd{font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;padding:2px 6px;border:1px solid var(--line-2);border-bottom-width:2px;border-radius:6px;background:var(--bg-raise);color:var(--text)}
 .keys dd{color:var(--muted)}
 .keys dd{text-align:left;white-space:normal}
+
+
+/* ---- v0.4: universal games, virtual Xbox pad, key mapping ---- */
+.vpad-panel{margin-bottom:16px;border-color:var(--line-2);background:linear-gradient(120deg,var(--panel),var(--bg-raise))}
+.vpad-body{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:22px;align-items:start}
+.vpad-body b{color:var(--text);font-weight:600}
+.vpad-list{display:grid;gap:1px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--line)}
+.vpad-list div{display:flex;justify-content:space-between;gap:12px;padding:8px 11px;background:var(--bg-raise);font-size:12px}
+.vpad-list span{color:var(--muted)}.vpad-list b{font-weight:550;font-size:12px}
+.lib-bar select{width:150px;height:34px}
+.lib-bar #lib-add-any{white-space:nowrap}
+.game .src-badge{position:absolute;right:8px;top:8px;height:22px;padding:0 8px;border-radius:99px;background:rgba(8,11,16,.78);border:1px solid var(--line-2);color:var(--text);font-size:11px;display:inline-flex;align-items:center;backdrop-filter:blur(4px)}
+.game .tag{left:8px;top:8px;right:auto}
+.game .tag .chip{height:22px;font-size:11px}
+.game .info .btn.icon{flex:none}
+.presets{display:grid;gap:9px}
+.preset{display:grid;gap:3px;text-align:left;padding:11px 12px;border:1px solid var(--line);border-radius:12px;background:var(--bg-raise);color:var(--text);transition:border-color .12s,background .12s}
+.preset:hover{border-color:var(--line-2);background:var(--panel-2)}
+.preset.on{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.preset b{font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:8px}
+.preset b .chip{margin-left:auto}
+.preset small{color:var(--muted);font-size:11.5px;line-height:1.45}
+.map-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 28px}
+.map-options .setting{padding:11px 0}
+.map-options .setting small{max-width:300px}
+.map-options .ctl b{font-size:12px;min-width:38px;text-align:right;color:var(--text)}
+.map-options select{min-width:132px}
+.map-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.map-row{display:grid;grid-template-columns:minmax(110px,1.15fr) minmax(84px,1fr) auto auto;gap:8px;align-items:center;padding:7px 9px;border:1px solid var(--line);border-radius:11px;background:var(--bg-raise);transition:border-color .12s,box-shadow .12s}
+.map-row.capturing{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.map-name{min-width:0}
+.map-name b{display:block;font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.map-name small{display:block;color:var(--dim);font-size:11px}
+.bind{height:28px;padding:0 9px;border-radius:7px;border:1px solid var(--line-2);background:var(--panel-2);color:var(--text);font-size:11.5px;font-family:"JetBrains Mono","Ubuntu Mono","DejaVu Sans Mono",ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.bind:hover{border-color:var(--dim)}
+.bind.empty{color:var(--dim);font-family:inherit;font-style:italic}
+.map-row .btn.sm{height:28px}
+.map-live{display:flex;flex-wrap:wrap;gap:7px;align-items:center;min-height:38px;padding:10px 12px;border:1px solid var(--line);border-radius:11px;background:var(--bg-raise);font-size:12.5px;color:var(--muted)}
+.map-live .keychip{display:inline-flex;height:24px;align-items:center;padding:0 9px;border-radius:7px;background:var(--accent-soft);border:1px solid var(--accent-glow);color:var(--text);font-family:"JetBrains Mono","Ubuntu Mono","DejaVu Sans Mono",ui-monospace,monospace;font-size:11.5px}
+.map-live .moving{color:var(--accent)}
+.uinput-steps{margin:10px 0;padding-left:20px;color:var(--muted);font-size:12.5px;display:grid;gap:5px}
+dialog .report{max-height:70px;white-space:pre-wrap;word-break:break-all;margin-top:8px}
+@media (max-width:1180px){
+  .map-options{grid-template-columns:1fr}.map-grid{grid-template-columns:1fr}.vpad-body{grid-template-columns:1fr}
+}
+@media (max-width:760px){
+  .lib-bar select{width:100%}
+  .map-row{grid-template-columns:minmax(0,1fr) auto auto auto;gap:6px}
+  .map-row .btn.sm{padding:0 8px}
+}

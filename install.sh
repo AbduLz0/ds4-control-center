@@ -26,6 +26,10 @@ fi
 python3 -m venv --system-site-packages "$ROOT/.venv"
 "$ROOT/.venv/bin/pip" install --quiet --upgrade pip
 "$ROOT/.venv/bin/pip" install --quiet -r "$ROOT/requirements.txt"
-chmod +x "$ROOT/run.sh" "$ROOT/uninstall.sh" "$ROOT/install-desktop-launcher.sh" "$ROOT/scripts/diagnose.sh"
+chmod +x "$ROOT/run.sh" "$ROOT/uninstall.sh" "$ROOT/install-desktop-launcher.sh" "$ROOT/scripts/diagnose.sh" "$ROOT/scripts/enable-uinput.sh"
 "$ROOT/.venv/bin/python" -c 'import webview, evdev, gi; print("Dependencies OK")' || { echo "A dependency failed to import. Run ./scripts/diagnose.sh" >&2; exit 1; }
 echo; echo "Install complete."; echo "  Start:           ./run.sh"; echo "  Add to menu:     ./install-desktop-launcher.sh"; echo "  Check system:    ./scripts/diagnose.sh"
+if [[ ! -w /dev/uinput ]]; then
+  echo; echo "Optional: keyboard/mouse mode and the virtual Xbox pad need write access to /dev/uinput."
+  echo "  Run once:        ./scripts/enable-uinput.sh    (adds one udev rule; asks with sudo)"
+fi

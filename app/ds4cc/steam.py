@@ -1,7 +1,8 @@
 """Steam detection, launching, and installed-library discovery.
 
 Nothing here injects input or touches game files. Launching goes through Steam's
-documented steam:// URIs, and controller mapping stays with Steam Input.
+documented steam:// URIs. The app's own keyboard mapping lives in input_map.py;
+Steam Input is still available as a separate, optional path.
 """
 from __future__ import annotations
 

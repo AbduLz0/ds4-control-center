@@ -12,3 +12,6 @@ rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/ds4-control-center.desk
 rm -rf "$ROOT/.venv"
 [[ "$wipe" =~ ^[Yy]$ ]] && rm -rf "$CFG/ds4-control-center" "$HOME/.local/state/ds4-control-center"
 echo "Done. You can now delete this folder. Shared system packages (GTK, bluez, python3-evdev) were not removed."
+if [[ -e /etc/udev/rules.d/70-ds4-control-center-uinput.rules ]]; then
+  echo "The optional uinput udev rule is still installed. Remove it with: sudo ./scripts/enable-uinput.sh --remove"
+fi

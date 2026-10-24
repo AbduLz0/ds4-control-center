@@ -6,16 +6,19 @@
   const NAMES = { cross: 'Cross', circle: 'Circle', square: 'Square', triangle: 'Triangle', 'dpad-up': 'D-pad up', 'dpad-down': 'D-pad down', 'dpad-left': 'D-pad left', 'dpad-right': 'D-pad right', l1: 'L1', r1: 'R1', l2: 'L2', r2: 'R2', l3: 'L3', r3: 'R3', share: 'Share', options: 'Options', ps: 'PS button', touchpad: 'Touchpad' };
   const TITLES = {
     dashboard: ['Overview', 'Live view of your controller'], diagnostics: ['Diagnostics', 'Measure sticks, triggers and buttons'],
-    bluetooth: ['Bluetooth', 'Pair, reconnect and disconnect'], gaming: ['Gaming', 'Steam and game shortcuts'],
+    bluetooth: ['Bluetooth', 'Pair, reconnect and disconnect'], gaming: ['Gaming', 'Steam, Lutris, desktop and any game'],
+    mapping: ['Key mapping', 'Turn the controller into a keyboard and mouse'],
     settings: ['Settings', 'Saved automatically'], help: ['Troubleshooting', 'Check what this app depends on'],
   };
 
   const S = {
-    settings: { theme: 'midnight', animations: true, refresh_ms: 50, deadzone: 8, graph_seconds: 20, trail_length: 60, games: [], profiles: {}, last_controller: null },
+    settings: { theme: 'midnight', animations: true, refresh_ms: 50, deadzone: 8, graph_seconds: 20, trail_length: 60, games: [], profiles: {}, last_controller: null, custom_games: [], mapping: null, virtual_pad_enabled: false, scan_desktop_games: true, scan_lutris_games: true },
     page: 'dashboard', dtab: 'sticks', frame: null, status: null, seq: 0, evSeq: 0, events: [], logFilter: 'all',
     dirty: true, bridge: false, profile: null, bt: { status: null, paired: [], nearby: [], job: null, busy: null, jobTimer: null, scanned: false },
     drift: { state: 'idle', t0: 0, sum: [0, 0], max: [0, 0], n: 0 }, circ: { on: false }, lib: [], rateTick: 0,
     driftResult: null, dismissedApp: null, lb: null, batSig: '', wasLive: null,
+    allGames: [], gameSources: [], gameRunning: null, steamStatus: null, vpad: null,
+    mapInfo: null, mapping: null, capture: null, swallowClick: false, mapSaveTimer: null,
   };
   const cache = {};
   const setText = (id, v) => { if (cache[id] !== v) { cache[id] = v; $(id).textContent = v; } };
@@ -40,6 +43,7 @@
   /* ---------- settings ---------- */
   function applySettings(s) {
     Object.assign(S.settings, s);
+    if (s && s.mapping) S.mapping = s.mapping;
     document.body.dataset.theme = S.settings.theme;
     document.body.classList.toggle('no-anim', !S.settings.animations);
     D.readColors();
@@ -59,6 +63,7 @@
     $('s-log').checked = s.diagnostic_logging !== false;
     $('s-notify').checked = s.notifications !== false; $('s-lowbat').value = String(s.low_battery_percent != null ? s.low_battery_percent : 20);
     $('s-idle').value = String(s.idle_disconnect_minutes || 0); $('s-autoprofile').checked = s.auto_profile !== false;
+    $('s-scan-desktop').checked = s.scan_desktop_games !== false; $('s-scan-lutris').checked = s.scan_lutris_games !== false;
   }
   let saveTimer = null, savedTimer = null, pending = {};
   function saveSoon(partial) {
@@ -82,6 +87,7 @@
   bindSel('s-lowbat', 'low_battery_percent', 1); bindSel('s-idle', 'idle_disconnect_minutes', 1);
   bindChk('s-notify', 'notifications'); bindChk('s-autoprofile', 'auto_profile');
   bindChk('s-anim', 'animations'); bindChk('s-reconnect', 'auto_reconnect'); bindChk('s-autostart', 'auto_start'); bindChk('s-min', 'start_minimized'); bindChk('s-log', 'diagnostic_logging');
+  bindChk('s-scan-desktop', 'scan_desktop_games'); bindChk('s-scan-lutris', 'scan_lutris_games');
   $('s-dz').addEventListener('input', (e) => { $('s-dz-v').textContent = e.target.value + '%'; saveSoon({ deadzone: Number(e.target.value) }); });
   $('s-trail').addEventListener('input', (e) => { $('s-trail-v').textContent = e.target.value; saveSoon({ trail_length: Number(e.target.value) }); });
   $('s-reset').addEventListener('click', async () => {
@@ -91,11 +97,12 @@
 
   /* ---------- navigation ---------- */
   function showPage(p) {
+    if (p !== 'mapping' && S.capture) { S.capture = null; S.swallowClick = false; }
     S.page = p;
     D.$$('.page').forEach((e) => e.classList.toggle('on', e.id === 'page-' + p));
     D.$$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.page === p));
     $('page-title').textContent = TITLES[p][0]; $('page-sub').textContent = TITLES[p][1];
-    if (p === 'dashboard') refreshLightbar(); if (p === 'bluetooth') refreshBluetooth(); if (p === 'gaming') refreshGaming(); if (p === 'settings') loadSettingsUI(); if (p === 'help') runChecks();
+    if (p === 'dashboard') refreshLightbar(); if (p === 'bluetooth') refreshBluetooth(); if (p === 'gaming') refreshGaming(); if (p === 'mapping') refreshMapping(); if (p === 'settings') loadSettingsUI(); if (p === 'help') runChecks();
     S.dirty = true; renderLog();
   }
   D.$$('[data-page]').forEach((b) => b.addEventListener('click', () => showPage(b.dataset.page)));
@@ -247,7 +254,9 @@
     const rc = st.reconnect || {};
     setText('c-reconnect', live ? '' : !rc.enabled ? 'Auto-reconnect is off.' : rc.state === 'trying' ? 'Trying to reconnect (attempt ' + rc.attempt + ' of ' + rc.max + ')…' : rc.state === 'gave_up' ? 'Stopped after ' + rc.max + ' attempts. Wake the controller and press Reconnect.' : rc.state === 'waiting' ? 'Waiting for Bluetooth to be turned on.' : rc.state === 'paused' ? 'Auto-reconnect paused because you disconnected the controller.' : '');
     renderBattery(st.battery, live, st.drain_rate);
-    autoProfile(st.steam_app);
+    autoProfile(st.running_game, st.steam_app);
+    if (st.virtual_pad) { S.vpad = st.virtual_pad; renderVpad(); }
+    if (S.page === 'mapping' && st.mapping && S.mapInfo) updateMappingChip(st.mapping);
     if (S.wasLive !== live) { S.wasLive = live; refreshLightbar(); refreshBatteryHistory(); }
     setText('banner-title', !S.bridge ? 'Desktop app required' : st.error ? 'Controller found, cannot read it' : 'No controller detected');
     setText('banner-text', !S.bridge ? 'Start this project with ./run.sh. A plain browser has no access to controllers.' : st.error ? st.error : 'Plug in the USB cable, or hold Share + PS until the light bar flashes and pair it on the Bluetooth page.');
@@ -313,17 +322,30 @@
   });
 
   /* ---------- automatic game profiles ---------- */
-  function gameName(id) {
-    const g = S.lib.concat(S.settings.games || []).find((x) => x.appid === id);
-    return g ? g.name : 'Steam app ' + id;
+  function profileFor(id) {
+    const profiles = S.settings.profiles || {};
+    if (!id) return null;
+    if (profiles[id]) return profiles[id];
+    if (id.indexOf('steam:') === 0 && profiles[id.slice(6)]) return profiles[id.slice(6)];
+    return null;
   }
-  function autoProfile(appid) {
+  function gameName(id) {
+    if (!id) return 'this game';
+    const all = S.allGames && S.allGames.length ? S.allGames : (S.lib || []);
+    const want = String(id).replace(/^steam:/, '');
+    const g = all.find((x) => x.id === id || String(x.appid) === want || x.id === 'steam:' + want) ||
+      (S.settings.games || []).find((x) => String(x.appid) === want);
+    return g ? g.name : id;
+  }
+  function autoProfile(running, steamApp) {
     if (S.settings.auto_profile === false) { if (S.profile && S.profile.auto) { S.profile = null; refreshDz(); } return; }
-    if (appid !== S.dismissedApp) S.dismissedApp = null;
-    const pf = appid ? (S.settings.profiles || {})[appid] : null, dz = pf && pf.deadzone != null ? pf.deadzone : null;
+    const id = running && running.id ? running.id : (steamApp ? 'steam:' + steamApp : null);
+    if (id !== S.dismissedApp) S.dismissedApp = null;
+    const pf = profileFor(id), dz = pf && pf.deadzone != null ? pf.deadzone : null;
     if (S.profile && !S.profile.auto) return;                 /* a profile from a manual launch wins */
-    if (appid && dz != null && appid !== S.dismissedApp) {
-      if (!S.profile || S.profile.appid !== appid || S.profile.dz !== dz) { S.profile = { name: gameName(appid), dz, auto: true, appid }; refreshDz(); }
+    if (id && dz != null && id !== S.dismissedApp) {
+      const name = running && running.name ? running.name : gameName(id);
+      if (!S.profile || S.profile.appid !== id || S.profile.dz !== dz) { S.profile = { name, dz, auto: true, appid: id }; refreshDz(); }
     } else if (S.profile && S.profile.auto) { S.profile = null; refreshDz(); }
   }
 
@@ -352,13 +374,13 @@
   $('btn-save-report').addEventListener('click', saveReport);
 
   /* ---------- keyboard shortcuts ---------- */
-  const PAGE_KEYS = ['dashboard', 'diagnostics', 'bluetooth', 'gaming', 'settings', 'help'];
+  const PAGE_KEYS = ['dashboard', 'diagnostics', 'bluetooth', 'gaming', 'mapping', 'settings', 'help'];
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
     const t = e.target, tag = t && t.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable) || document.querySelector('dialog[open]')) return;
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if (k >= '1' && k <= '6') { showPage(PAGE_KEYS[Number(k) - 1]); return; }
+    if (k >= '1' && k <= '7') { showPage(PAGE_KEYS[Number(k) - 1]); return; }
     if (k === "?") { showPage("settings"); const kb = document.querySelector('.keys'); if (kb) kb.scrollIntoView({ block: 'center' }); return; }
     if (S.page !== 'diagnostics') return;
     if (k === 's') saveReport();
@@ -427,50 +449,131 @@
     try { D.report(await D.call('bt_action', a, mac)); } finally { S.bt.busy = null; await refreshBluetooth(); setTimeout(pollStatus, 1500); }
   });
 
-  /* ---------- Gaming ---------- */
+  /* ---------- Gaming: Steam plus any other game ---------- */
   const hue = (s) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+  const SOURCE_LABELS = { steam: 'Steam', lutris: 'Lutris', desktop: 'Desktop', manual: 'Added by me' };
+  const gameProfileKey = (g) => (g.source === 'steam' && g.appid ? String(g.appid) : g.id);
+  function allLibrary() {
+    const list = (S.allGames || []).slice();
+    const have = new Set(list.map((g) => String(g.appid || '')));
+    for (const g of S.settings.games || []) {
+      if (g.appid && !have.has(String(g.appid))) {
+        list.push({ id: 'steam:' + g.appid, appid: String(g.appid), name: g.name, source: 'steam', cover: null, added: true });
+      }
+    }
+    return list;
+  }
   async function refreshGaming(force) {
     try {
       const st = await D.call('steam_status');
+      S.steamStatus = st;
       setText('st-title', st.installed ? 'Steam is installed' : 'Steam not detected');
-      setText('st-sub', st.installed ? (st.kind === 'flatpak' ? 'Flatpak install' : 'Native install') + (st.running ? ' · running now' : ' · not running') : 'Install Steam from your software center or steampowered.com.');
+      setText('st-sub', st.installed ? (st.kind === 'flatpak' ? 'Flatpak install' : 'Native install') + (st.running ? ' · running now' : ' · not running') : 'Steam is optional. Games can be added below without it.');
       $('st-launch').disabled = !st.installed; $('st-settings').disabled = !st.installed;
       $('rd-steam').className = 'dot' + (st.running ? ' on' : ''); setText('rd-steam-t', st.running ? 'Steam is running' : 'Steam not running');
-      S.lib = await D.call('steam_library', !!force); renderGames();
-    } catch (e) { setText('st-title', 'Desktop app required'); setText('st-sub', 'Steam detection needs the desktop app (./run.sh).'); }
+    } catch (e) {
+      setText('st-title', 'Desktop app required'); setText('st-sub', 'Game detection needs the desktop app (./run.sh).');
+    }
+    let loaded = false;
+    try {
+      const r = await D.call('get_games', !!force);
+      if (r && Array.isArray(r.games)) {
+        S.allGames = r.games; S.gameSources = r.sources || []; S.gameRunning = r.running || null;
+        S.lib = r.games.filter((g) => g.source === 'steam');
+        loaded = true;
+        if (r.error) D.toast(r.error, 'bad');
+      }
+    } catch (e) { /* older bridge: use the Steam-only API below */ }
+    if (!loaded) {
+      try {
+        const lib = await D.call('steam_library', !!force);
+        S.allGames = (lib || []).map((g) => ({ id: 'steam:' + g.appid, appid: String(g.appid), name: g.name, source: 'steam', cover: g.cover }));
+        S.lib = S.allGames.slice();
+        S.gameSources = [{ id: 'steam', label: 'Steam', count: S.allGames.length }];
+      } catch (e) { S.allGames = []; S.lib = []; S.gameSources = []; }
+    }
+    renderGames();
+    try {
+      const vp = await D.call('get_virtual_pad');
+      if (vp && vp.status) { S.vpad = vp.status; renderVpad(); }
+    } catch (e) { /* older bridge */ }
   }
   function renderGames() {
-    const q = $('lib-search').value.trim().toLowerCase(), have = new Set(S.lib.map((g) => g.appid));
-    const manual = (S.settings.games || []).filter((g) => !have.has(g.appid)).map((g) => Object.assign({ manual: true, cover: null }, g));
-    const all = S.lib.concat(manual).filter((g) => !q || g.name.toLowerCase().includes(q));
-    setHtml('games', all.map((g) => {
-      const pf = (S.settings.profiles || {})[g.appid], h = hue(g.name);
+    const q = $('lib-search').value.trim().toLowerCase();
+    const src = $('lib-source') ? $('lib-source').value : 'all';
+    const all = allLibrary();
+    const filtered = all.filter((g) => (src === 'all' || g.source === src) && (!q || g.name.toLowerCase().includes(q)));
+    setHtml('games', filtered.map((g) => {
+      const key = gameProfileKey(g), pf = profileFor(key), h = hue(g.name);
       const art = g.cover ? 'background-image:url(&quot;' + esc(g.cover) + '&quot;)' : 'background-image:linear-gradient(145deg,hsl(' + h + ' 45% 26%),hsl(' + ((h + 50) % 360) + ' 40% 12%))';
+      const launch = '<button class="btn sm primary" data-game="launch" data-id="' + esc(g.id) + '" data-appid="' + esc(g.appid || '') + '" data-source="' + esc(g.source) + '" data-name="' + esc(g.name) + '">Launch</button>';
+      const steamInput = g.source === 'steam' && g.appid ? '<button class="btn sm icon" title="Open Steam Input for this game" aria-label="Steam Input" data-game="input" data-id="' + esc(g.appid) + '">' + icon('pad', 'sm') + '</button>' : '';
+      const remove = (g.source === 'manual' || g.added) ? '<button class="btn sm icon ghost" title="Remove from this list" aria-label="Remove" data-game="remove" data-id="' + esc(g.id) + '" data-appid="' + esc(g.appid || '') + '" data-source="' + esc(g.source) + '">' + icon('trash', 'sm') + '</button>' : '';
       return '<div class="game' + (pf ? ' has-profile' : '') + '"><div class="art" style="' + art + '">' + (g.cover ? '' : '<span class="ini">' + esc(g.name.trim().slice(0, 2).toUpperCase()) + '</span>') +
-        '<div class="tag chips">' + (g.manual ? '<span class="chip">Added</span>' : '') + (pf ? '<span class="chip accent">Profile</span>' : '') + '</div></div>' +
-        '<div class="info"><b title="' + esc(g.name) + '">' + esc(g.name) + '</b><div><button class="btn sm primary" data-game="launch" data-id="' + g.appid + '" data-name="' + esc(g.name) + '">Launch</button>' +
-        '<button class="btn sm icon" title="Open Steam Input for this game" aria-label="Steam Input" data-game="input" data-id="' + g.appid + '">' + icon('pad', 'sm') + '</button>' +
-        '<button class="btn sm icon" title="App profile" aria-label="Profile" data-game="profile" data-id="' + g.appid + '" data-name="' + esc(g.name) + '">' + icon('sliders', 'sm') + '</button>' +
-        (g.manual ? '<button class="btn sm icon ghost" title="Remove shortcut" aria-label="Remove" data-game="remove" data-id="' + g.appid + '">' + icon('trash', 'sm') + '</button>' : '') + '</div></div></div>';
-    }).join('') || '<div class="empty" style="grid-column:1/-1">' + (S.lib.length || manual.length ? 'No games match your search.' : 'No installed Steam games were found. Add one by App ID.') + '</div>');
-    setText('lib-note', S.lib.length ? S.lib.length + ' installed game' + (S.lib.length === 1 ? '' : 's') + ' found in your Steam libraries.' : '');
+        '<span class="src-badge">' + esc(SOURCE_LABELS[g.source] || g.source) + '</span>' +
+        '<div class="tag chips">' + (pf ? '<span class="chip accent">Profile</span>' : '') + '</div></div>' +
+        '<div class="info"><b title="' + esc(g.command || g.name) + '">' + esc(g.name) + '</b><div>' + launch + steamInput +
+        '<button class="btn sm icon" title="App profile" aria-label="Profile" data-game="profile" data-id="' + esc(g.id) + '" data-key="' + esc(key) + '" data-name="' + esc(g.name) + '">' + icon('sliders', 'sm') + '</button>' + remove + '</div></div></div>';
+    }).join('') || '<div class="empty" style="grid-column:1/-1">' + (all.length ? 'No games match this search or source.' : 'No games found yet. Add a Steam App ID, or use Add any game for a Lutris, desktop or hand-made launcher.') + '</div>');
+    const counts = S.gameSources && S.gameSources.length ? S.gameSources.filter((x) => x.count).map((x) => x.count + ' ' + x.label).join(' · ') : '';
+    setText('lib-note', all.length ? all.length + ' game' + (all.length === 1 ? '' : 's') + ' available' + (counts ? ' · ' + counts : '') + '. Each tile shows its source; this app does not change the game’s controls.' : '');
   }
-  $('lib-search').addEventListener('input', renderGames); $('lib-refresh').addEventListener('click', () => refreshGaming(true));
+  function renderSources() { if (S.gameSources) renderGames(); }
+  $('lib-search').addEventListener('input', renderGames);
+  if ($('lib-source')) $('lib-source').addEventListener('change', renderGames);
+  $('lib-refresh').addEventListener('click', () => refreshGaming(true));
   $('st-launch').addEventListener('click', () => act('launch_steam', false)); $('st-settings').addEventListener('click', () => act('open_controller_settings', false));
-  let profileApp = null;
+  $('vpad-enable').addEventListener('change', async (e) => {
+    const want = e.target.checked;
+    try {
+      const r = await D.call('set_virtual_pad', want);
+      if (r.settings) applySettings(r.settings);
+      S.vpad = r.virtual_pad || S.vpad;
+      if (!r.ok) {
+        e.target.checked = !want; D.report(r);
+        if (want) openUinputHelp();
+      } else D.toast(want ? 'Virtual Xbox pad is on.' : 'Virtual Xbox pad is off.', 'ok');
+      renderVpad();
+    } catch (err) { e.target.checked = !want; D.toast('Open the desktop app to do this.', 'bad'); }
+  });
+  function renderVpad() {
+    if (!$('vpad-enable')) return;
+    const st = S.vpad || {};
+    const on = !!st.enabled;
+    const wanted = st.desired !== undefined ? !!st.desired : !!S.settings.virtual_pad_enabled;
+    const chip = $('vpad-chip');
+    if (chip) {
+      setText('vpad-chip', on ? 'On' : wanted && st.available === false ? 'Needs permission' : wanted ? 'Starting…' : 'Off');
+      chip.className = 'chip ' + (on ? 'ok' : wanted && st.available === false ? 'warn' : wanted ? 'warn' : '');
+    }
+    if ($('vpad-enable').checked !== (on || wanted)) $('vpad-enable').checked = on || wanted;
+    let note = st.error || st.reason || st.message || (on ? 'Games now see a standard Xbox 360 pad.' : 'Turn it on for games that do not see the DualShock 4.');
+    const grab = st.grab || {};
+    if (on && grab.wanted && !grab.active) note = 'The controller could not be reserved exclusively' + (grab.error ? ': ' + grab.error : '.') + ' A game may see both pads.';
+    setText('vpad-note', note);
+  }
+  let profileApp = null, profileName = '';
   document.addEventListener('click', async (e) => {
+    if (S.swallowClick) return;
     const b = e.target.closest('[data-game]'); if (!b) return;
     const id = b.dataset.id, a = b.dataset.game;
+    const g = allLibrary().find((x) => x.id === id) || { id, appid: b.dataset.appid, source: b.dataset.source, name: b.dataset.name };
     try {
       if (a === 'launch') {
-        const r = await D.call('launch_game', id); D.report(r);
-        const pf = (S.settings.profiles || {})[id];
-        if (r.ok && pf && pf.deadzone != null) { S.profile = { name: b.dataset.name, dz: pf.deadzone, appid: id }; refreshDz(); }
-      } else if (a === 'input') D.report(await D.call('open_controller_settings', id));
-      else if (a === 'remove') { const r = await D.call('remove_game', id); if (r.ok) { applySettings(r.settings); renderGames(); } }
-      else if (a === 'profile') {
-        profileApp = id; const pf = (S.settings.profiles || {})[id] || { deadzone: null, note: '' };
-        $('pf-title').textContent = b.dataset.name; $('pf-on').checked = pf.deadzone != null; $('pf-dz').value = pf.deadzone != null ? pf.deadzone : S.settings.deadzone;
+        const r = g.source === 'steam' && g.appid ? await D.call('launch_game', g.appid) : await D.call('launch_any_game', id);
+        D.report(r);
+        const pf = profileFor(gameProfileKey(g));
+        if (r.ok && pf && pf.deadzone != null) { S.profile = { name: g.name, dz: pf.deadzone, appid: gameProfileKey(g) }; refreshDz(); }
+        else if (r.ok && S.profile && !S.profile.auto) { S.profile = null; refreshDz(); }
+      } else if (a === 'input') D.report(await D.call('open_controller_settings', g.appid || id));
+      else if (a === 'remove') {
+        const r = g.source === 'steam' ? await D.call('remove_game', g.appid || id) : await D.call('remove_custom_game', id);
+        if (r.ok) { applySettings(r.settings); refreshGaming(true); }
+        else D.report(r);
+      } else if (a === 'profile') {
+        profileApp = b.dataset.key || gameProfileKey(g); profileName = b.dataset.name || g.name;
+        const pf = profileFor(profileApp) || { deadzone: null, note: '' };
+        $('pf-title').textContent = profileName; $('pf-on').checked = pf.deadzone != null; $('pf-dz').value = pf.deadzone != null ? pf.deadzone : S.settings.deadzone;
         $('pf-dz-v').textContent = $('pf-dz').value + '%'; $('pf-dz').disabled = pf.deadzone == null; $('pf-note').value = pf.note || ''; $('dlg-profile').showModal();
       }
     } catch (err) { D.toast('Open the desktop app to do this.', 'bad'); }
@@ -480,19 +583,271 @@
   $('pf-cancel').addEventListener('click', () => $('dlg-profile').close());
   $('pf-save').addEventListener('click', async () => {
     const r = await D.call('set_profile', profileApp, $('pf-on').checked ? Number($('pf-dz').value) : null, $('pf-note').value);
-    if (r.ok) { applySettings(r.settings); renderGames(); $('dlg-profile').close(); } D.report(r, 'Profile saved. It applies when you launch this game from here.');
+    if (r.ok) { applySettings(r.settings); renderGames(); $('dlg-profile').close(); } D.report(r, 'Profile saved. It is used when this game runs or when you launch it here.');
   });
   $('pf-remove').addEventListener('click', async () => { const r = await D.call('remove_profile', profileApp); if (r.ok) { applySettings(r.settings); renderGames(); $('dlg-profile').close(); } });
   $('lib-add').addEventListener('click', () => { $('add-id').value = ''; $('add-name').value = ''; $('dlg-add').showModal(); $('add-id').focus(); });
   $('add-cancel').addEventListener('click', () => $('dlg-add').close());
   $('add-save').addEventListener('click', async () => {
-    try { const r = await D.call('add_game', $('add-id').value, $('add-name').value); if (r.ok) { applySettings(r.settings); renderGames(); $('dlg-add').close(); } D.report(r); } catch (e) { D.toast('Open the desktop app to do this.', 'bad'); }
+    try { const r = await D.call('add_game', $('add-id').value, $('add-name').value); if (r.ok) { applySettings(r.settings); refreshGaming(true); $('dlg-add').close(); } D.report(r); } catch (e) { D.toast('Open the desktop app to do this.', 'bad'); }
+  });
+  $('lib-add-any').addEventListener('click', () => { $('any-name').value = ''; $('any-command').value = ''; $('dlg-add-any').showModal(); $('any-name').focus(); });
+  $('any-cancel').addEventListener('click', () => $('dlg-add-any').close());
+  $('any-save').addEventListener('click', async () => {
+    try {
+      const r = await D.call('add_custom_game', $('any-name').value, $('any-command').value);
+      if (r.ok) { applySettings(r.settings); $('dlg-add-any').close(); refreshGaming(true); }
+      D.report(r);
+    } catch (e) { D.toast('Open the desktop app to add a game.', 'bad'); }
   });
   function renderProfileChip() {
     const c = $('profile-chip'); c.classList.toggle('hidden', !S.profile);
     if (S.profile) { c.textContent = (S.profile.auto ? 'Auto profile: ' : 'Profile: ') + S.profile.name + ' · dead zone ' + S.profile.dz + '% (click to clear)'; }
   }
   $('profile-chip').addEventListener('click', () => { if (S.profile && S.profile.auto) S.dismissedApp = S.profile.appid; S.profile = null; refreshDz(); });
+
+  /* ---------- Key mapping ---------- */
+  const KEY_NAMES = {
+    KEY_SPACE: 'Space', KEY_ENTER: 'Enter', KEY_ESC: 'Escape', KEY_TAB: 'Tab', KEY_BACKSPACE: 'Backspace',
+    KEY_LEFTCTRL: 'Left Ctrl', KEY_RIGHTCTRL: 'Right Ctrl', KEY_LEFTSHIFT: 'Left Shift', KEY_RIGHTSHIFT: 'Right Shift',
+    KEY_LEFTALT: 'Left Alt', KEY_RIGHTALT: 'Right Alt', KEY_LEFTMETA: 'Left Super', KEY_RIGHTMETA: 'Right Super',
+    KEY_UP: '↑ Up', KEY_DOWN: '↓ Down', KEY_LEFT: '← Left', KEY_RIGHT: '→ Right', KEY_INSERT: 'Insert', KEY_DELETE: 'Delete',
+    KEY_HOME: 'Home', KEY_END: 'End', KEY_PAGEUP: 'Page Up', KEY_PAGEDOWN: 'Page Down', KEY_CAPSLOCK: 'Caps Lock',
+    KEY_MINUS: '-', KEY_EQUAL: '=', KEY_LEFTBRACE: '[', KEY_RIGHTBRACE: ']', KEY_BACKSLASH: '\\', KEY_SEMICOLON: ';',
+    KEY_APOSTROPHE: "'", KEY_GRAVE: '`', KEY_COMMA: ',', KEY_DOT: '.', KEY_SLASH: '/',
+    BTN_LEFT: 'Left mouse', BTN_RIGHT: 'Right mouse', BTN_MIDDLE: 'Middle mouse',
+    WHEEL_UP: 'Wheel up', WHEEL_DOWN: 'Wheel down',
+  };
+  const CODE_TO_KEY = {};
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach((c) => { CODE_TO_KEY['Key' + c] = 'KEY_' + c; });
+  for (let i = 0; i <= 9; i++) { CODE_TO_KEY['Digit' + i] = 'KEY_' + i; CODE_TO_KEY['Numpad' + i] = 'KEY_KP' + i; }
+  for (let i = 1; i <= 12; i++) CODE_TO_KEY['F' + i] = 'KEY_F' + i;
+  Object.assign(CODE_TO_KEY, {
+    ArrowUp: 'KEY_UP', ArrowDown: 'KEY_DOWN', ArrowLeft: 'KEY_LEFT', ArrowRight: 'KEY_RIGHT',
+    Space: 'KEY_SPACE', Enter: 'KEY_ENTER', Tab: 'KEY_TAB', Backspace: 'KEY_BACKSPACE', Insert: 'KEY_INSERT', Delete: 'KEY_DELETE',
+    Home: 'KEY_HOME', End: 'KEY_END', PageUp: 'KEY_PAGEUP', PageDown: 'KEY_PAGEDOWN', CapsLock: 'KEY_CAPSLOCK',
+    Minus: 'KEY_MINUS', Equal: 'KEY_EQUAL', BracketLeft: 'KEY_LEFTBRACE', BracketRight: 'KEY_RIGHTBRACE',
+    Backslash: 'KEY_BACKSLASH', Semicolon: 'KEY_SEMICOLON', Quote: 'KEY_APOSTROPHE', Backquote: 'KEY_GRAVE',
+    Comma: 'KEY_COMMA', Period: 'KEY_DOT', Slash: 'KEY_SLASH',
+    ShiftLeft: 'KEY_LEFTSHIFT', ShiftRight: 'KEY_RIGHTSHIFT', ControlLeft: 'KEY_LEFTCTRL', ControlRight: 'KEY_RIGHTCTRL',
+    AltLeft: 'KEY_LEFTALT', AltRight: 'KEY_RIGHTALT', MetaLeft: 'KEY_LEFTMETA', MetaRight: 'KEY_RIGHTMETA',
+    NumpadAdd: 'KEY_KPPLUS', NumpadSubtract: 'KEY_KPMINUS', NumpadMultiply: 'KEY_KPASTERISK',
+    NumpadDivide: 'KEY_KPSLASH', NumpadEnter: 'KEY_KPENTER', NumpadDecimal: 'KEY_KPDOT', NumLock: 'KEY_NUMLOCK',
+    PrintScreen: 'KEY_SYSRQ', ScrollLock: 'KEY_SCROLLLOCK', Pause: 'KEY_PAUSE',
+  });
+  const prettyKey = (name) => name ? (KEY_NAMES[name] || name.replace(/^KEY_/, '').replace(/_/g, ' ').toLowerCase().replace(/(^|\s)\w/g, (m) => m.toUpperCase())) : 'Unmapped';
+  function openUinputHelp() {
+    const path = (S.mapInfo && S.mapInfo.script) || './scripts/enable-uinput.sh';
+    const cmd = 'sudo "' + path + '"';
+    $('uinput-command').textContent = cmd;
+    $('dlg-uinput').showModal();
+  }
+  async function refreshMapping() {
+    try {
+      const info = await D.call('get_mapping');
+      S.mapInfo = info; S.mapping = info.mapping || {};
+      renderMapping();
+    } catch (e) {
+      S.mapInfo = null; renderMappingUnavailable();
+    }
+  }
+  function renderMappingUnavailable() {
+    setText('map-chip', 'Desktop app required'); $('map-chip').className = 'chip warn';
+    setText('map-state-title', 'Desktop app required');
+    setText('map-state-sub', 'Key mapping only works inside the app. Start it with ./run.sh.');
+    setText('map-note', 'The page is visible here so you can see what the feature does; it cannot create virtual devices in a plain browser.');
+    $('map-enable').checked = false; $('map-enable').disabled = true;
+    setHtml('map-presets', '<div class="empty">Presets are available in the desktop app.</div>');
+    setHtml('map-rows', '<div class="empty">Button bindings are available in the desktop app.</div>');
+    $('map-live').textContent = 'Nothing pressed.';
+  }
+  function renderMappingStatus(st) {
+    const m = S.mapping || {}, on = !!m.enabled, available = !S.mapInfo || S.mapInfo.available !== false;
+    let chipText = 'Off', cls = '', title = 'Off', sub = 'Turn it on to send keys to the focused window.';
+    if (!S.bridge) { chipText = 'Preview'; cls = 'warn'; title = 'Desktop app required'; sub = 'Start the app with ./run.sh.'; }
+    else if (st && st.state === 'on') {
+      chipText = 'On'; cls = 'ok';
+      const presetLabel = S.mapInfo && (S.mapInfo.presets || []).find((p) => p.id === st.preset);
+      const presetText = st.preset === 'custom' ? 'Custom' : (presetLabel ? presetLabel.label : (st.preset || 'Custom'));
+      if (st.controller === false) {
+        title = 'On — waiting for a controller'; sub = 'Preset: ' + presetText + '. Connect a controller; virtual keys are released while none is present.';
+      } else {
+        title = 'On — sending keyboard and mouse input';
+        sub = 'Preset: ' + presetText + ' · ' + ((st.held || []).length) + ' virtual output' + ((st.held || []).length === 1 ? '' : 's') + ' held.';
+      }
+    }
+    else if (!available) { chipText = 'Needs permission'; cls = 'warn'; title = 'Virtual input is not available yet'; sub = (st && st.reason) || (S.mapInfo && S.mapInfo.reason) || 'Your user cannot write to /dev/uinput.'; }
+    else if (on && st && st.state === 'blocked') { chipText = 'Needs permission'; cls = 'warn'; title = 'Needs permission'; sub = (st && st.reason) || (S.mapInfo && S.mapInfo.reason) || 'Your user cannot write to /dev/uinput.'; }
+    else if (on) { chipText = 'Starting…'; cls = 'warn'; title = 'Starting…'; sub = (st && st.message) || 'Creating the virtual keyboard and mouse.'; }
+    setText('map-chip', chipText); $('map-chip').className = 'chip ' + cls;
+    setText('map-state-title', title); setText('map-state-sub', sub);
+    setText('map-note', (st && (st.error || st.reason)) || (S.mapInfo && S.mapInfo.reason) || 'Keys go to the focused window. Use the button map below to change any binding.');
+    $('map-dot').className = 'dot' + (st && st.state === 'on' ? ' on' : on ? ' bad' : available ? '' : ' warn');
+  }
+  function renderMappingLive() {
+    const st = (S.mapInfo && S.mapInfo.status) || {};
+    const held = st.held || [];
+    const parts = held.map((h) => '<span class="keychip">' + esc(prettyKey(h)) + '</span>');
+    if (st.mouse_moving) parts.push('<span class="moving">Mouse moving</span>');
+    $('map-live').innerHTML = parts.length ? parts.join('') : '<span>Nothing pressed.</span>';
+    setText('map-live-chip', held.length || st.mouse_moving ? 'Active' : 'Idle');
+    $('map-live-chip').className = 'chip ' + (held.length || st.mouse_moving ? 'ok' : '');
+    renderMappingStatus(st);
+  }
+  function renderMapping() {
+    const info = S.mapInfo, m = S.mapping || (info && info.mapping) || {};
+    if (!info || !info.mapping) return renderMappingUnavailable();
+    $('map-enable').disabled = !S.bridge;
+    if ($('map-enable').checked !== !!m.enabled) $('map-enable').checked = !!m.enabled;
+    renderMappingStatus(info.status || {});
+    const preset = (info.presets || []).find((p) => p.id === m.preset);
+    setText('map-preset-chip', preset ? preset.label : 'Custom');
+    setHtml('map-presets', (info.presets || []).map((p) => '<button class="preset' + (m.preset === p.id ? ' on' : '') + '" data-preset="' + esc(p.id) + '"><b>' + esc(p.label) + (m.preset === p.id ? '<span class="chip accent">Active</span>' : '') + '</b><small>' + esc(p.description) + '</small></button>').join(''));
+    const modes = info.stick_modes || [];
+    const options = (list) => list.map((x) => '<option value="' + esc(x.id) + '">' + esc(x.label) + '</option>').join('');
+    $('map-left').innerHTML = options(modes.filter((x) => x.id !== 'mouse'));
+    $('map-right').innerHTML = options(modes);
+    $('map-left').value = m.left_stick || 'wasd'; $('map-right').value = m.right_stick || 'mouse';
+    $('map-dz').value = Math.round((m.deadzone != null ? m.deadzone : 0.18) * 100); $('map-dz-v').textContent = $('map-dz').value + '%';
+    $('map-sens').value = Math.round((m.sensitivity != null ? m.sensitivity : 1) * 100); $('map-sens-v').textContent = (Number($('map-sens').value) / 100).toFixed(1) + '×';
+    $('map-trig').value = Math.round((m.trigger_threshold != null ? m.trigger_threshold : 0.35) * 100); $('map-trig-v').textContent = $('map-trig').value + '%';
+    $('map-invert').checked = !!m.invert_y; $('map-grab').checked = !!m.grab;
+    renderMapRows();
+    renderMappingLive();
+  }
+  function renderMapRows() {
+    const info = S.mapInfo || {}, m = S.mapping || {};
+    const buttons = info.buttons || [];
+    if (!buttons.length) { setHtml('map-rows', '<div class="empty">No bindings available.</div>'); return; }
+    const bindings = m.bindings || {};
+    let mapped = 0;
+    setHtml('map-rows', buttons.map((b) => {
+      const key = bindings[b.id] || ''; if (key) mapped++;
+      const capturing = S.capture === b.id;
+      return '<div class="map-row' + (capturing ? ' capturing' : '') + '" data-btn="' + esc(b.id) + '">' +
+        '<div class="map-name"><b>' + esc(b.label) + '</b><small>' + esc(b.id) + '</small></div>' +
+        '<button class="bind' + (key ? '' : ' empty') + '" data-rebind="' + esc(b.id) + '" title="Click, then press a key or mouse button">' + esc(prettyKey(key)) + '</button>' +
+        '<button class="btn sm' + (capturing ? ' primary' : '') + '" data-rebind="' + esc(b.id) + '">' + (capturing ? 'Press…' : 'Rebind') + '</button>' +
+        '<button class="btn sm icon ghost" title="Clear this binding" aria-label="Clear" data-clear="' + esc(b.id) + '">' + icon('x', 'sm') + '</button></div>';
+    }).join(''));
+    setText('map-count', mapped + ' / ' + buttons.length + ' mapped');
+  }
+  function saveMappingSoon() {
+    if (!S.mapping) return;
+    clearTimeout(S.mapSaveTimer);
+    const snapshot = JSON.parse(JSON.stringify(S.mapping || {}));
+    S.mapSaveTimer = setTimeout(async () => {
+      try {
+        const r = await D.call('save_mapping', snapshot);
+        if (r.ok) {
+          S.mapInfo = r.mapping; S.mapping = (r.mapping && r.mapping.mapping) || snapshot;
+          if (r.settings) applySettings(r.settings);
+          renderMapping();
+        } else { D.report(r); refreshMapping(); }
+      } catch (e) { D.toast('Open the desktop app to save the mapping.', 'bad'); }
+    }, 200);
+  }
+  function bindButton(button, key) {
+    if (!S.mapping) return;
+    S.mapping = Object.assign({}, S.mapping, { preset: 'custom', bindings: Object.assign({}, S.mapping.bindings || {}, { [button]: key }) });
+    S.capture = null; S.mapInfo.mapping = S.mapping;
+    renderMapRows(); saveMappingSoon();
+  }
+  document.addEventListener('keydown', (e) => {
+    if (!S.capture) return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === 'Escape') { S.capture = null; renderMapRows(); return; }
+    const key = CODE_TO_KEY[e.code];
+    if (!key) { D.toast('That key is not supported yet. Try another one.'); return; }
+    bindButton(S.capture, key);
+  }, true);
+  document.addEventListener('mousedown', (e) => {
+    if (!S.capture) return;
+    e.preventDefault(); e.stopPropagation();
+    const map = { 0: 'BTN_LEFT', 1: 'BTN_MIDDLE', 2: 'BTN_RIGHT' };
+    if (map[e.button]) {
+      S.swallowClick = true;
+      setTimeout(() => { S.swallowClick = false; }, 500);
+      bindButton(S.capture, map[e.button]);
+    }
+  }, true);
+  document.addEventListener('wheel', (e) => {
+    if (!S.capture) return;
+    e.preventDefault(); e.stopPropagation();
+    bindButton(S.capture, e.deltaY < 0 ? 'WHEEL_UP' : 'WHEEL_DOWN');
+  }, { capture: true, passive: false });
+  document.addEventListener('click', (e) => {
+    if (!S.swallowClick) return;
+    S.swallowClick = false; e.preventDefault(); e.stopPropagation();
+  }, true);
+  $('map-rows').addEventListener('click', (e) => {
+    const rb = e.target.closest('[data-rebind]');
+    if (rb) { S.capture = rb.dataset.rebind; renderMapRows(); D.toast('Press a key or mouse button. Escape cancels.'); return; }
+    const cl = e.target.closest('[data-clear]');
+    if (cl) { bindButton(cl.dataset.clear, ''); }
+  });
+  $('map-presets').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-preset]'); if (!b) return;
+    try {
+      const r = await D.call('apply_mapping_preset', b.dataset.preset);
+      if (r.ok) { S.mapInfo = r.mapping; S.mapping = r.mapping.mapping; if (r.settings) applySettings(r.settings); renderMapping(); D.toast('Preset applied.', 'ok'); }
+      else D.report(r);
+    } catch (err) { D.toast('Open the desktop app to change presets.', 'bad'); }
+  });
+  $('map-enable').addEventListener('change', async (e) => {
+    const want = e.target.checked;
+    try {
+      const r = await D.call('set_mapping_enabled', want);
+      if (r.settings) applySettings(r.settings);
+      S.mapInfo = r.mapping || S.mapInfo; S.mapping = (r.mapping && r.mapping.mapping) || S.mapping;
+      if (!r.ok) { e.target.checked = !want; D.report(r); if (want) openUinputHelp(); }
+      else D.toast(want ? 'Keyboard and mouse mode is on.' : 'Keyboard and mouse mode is off.', 'ok');
+      renderMapping();
+    } catch (err) { e.target.checked = !want; D.toast('Open the desktop app to change this setting.', 'bad'); }
+  });
+  $('map-refresh').addEventListener('click', refreshMapping);
+  $('map-help').addEventListener('click', openUinputHelp);
+  $('uinput-close').addEventListener('click', () => $('dlg-uinput').close());
+  $('uinput-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('uinput-command').textContent); D.toast('Command copied.', 'ok'); }
+    catch (e) { D.toast('Copy is blocked here; select the command above.'); }
+  });
+  $('map-reset-bindings').addEventListener('click', async () => {
+    const preset = (S.mapping && S.mapping.preset && S.mapping.preset !== 'custom') ? S.mapping.preset : 'shooter';
+    try {
+      const r = await D.call('apply_mapping_preset', preset);
+      if (r.ok) { S.mapInfo = r.mapping; S.mapping = r.mapping.mapping; if (r.settings) applySettings(r.settings); renderMapping(); D.toast('Bindings reset.', 'ok'); }
+      else D.report(r);
+    } catch (e) { D.toast('Open the desktop app to change bindings.', 'bad'); }
+  });
+  const mapSelect = (id, key, transform, marksCustom) => $(id).addEventListener('change', (e) => {
+    if (!S.mapping) return;
+    S.mapping[key] = transform ? transform(e.target.value) : e.target.value;
+    if (marksCustom) S.mapping.preset = 'custom';
+    saveMappingSoon(); renderMapping();
+  });
+  const mapCheck = (id, key) => $(id).addEventListener('change', (e) => {
+    if (!S.mapping) return;
+    S.mapping[key] = e.target.checked; saveMappingSoon();
+  });
+  mapSelect('map-left', 'left_stick', null, true); mapSelect('map-right', 'right_stick', null, true);
+  mapSelect('map-dz', 'deadzone', (v) => Number(v) / 100);
+  mapSelect('map-sens', 'sensitivity', (v) => Number(v) / 100);
+  mapSelect('map-trig', 'trigger_threshold', (v) => Number(v) / 100);
+  mapCheck('map-invert', 'invert_y'); mapCheck('map-grab', 'grab');
+  $('map-dz').addEventListener('input', (e) => { $('map-dz-v').textContent = e.target.value + '%'; });
+  $('map-sens').addEventListener('input', (e) => { $('map-sens-v').textContent = (Number(e.target.value) / 100).toFixed(1) + '×'; });
+  $('map-trig').addEventListener('input', (e) => { $('map-trig-v').textContent = e.target.value + '%'; });
+  function updateMappingChip(summary) {
+    if (!S.mapInfo || !summary) return;
+    const st = S.mapInfo.status || {};
+    if (summary.enabled !== !!st.enabled) {
+      st.enabled = summary.enabled;
+      if (!summary.enabled) st.state = 'off';
+      else if (st.state === 'off') st.state = 'on';
+      renderMappingStatus(st);
+    }
+  }
 
   /* ---------- troubleshooting ---------- */
   let report = '';
@@ -536,6 +891,10 @@
       try { const b = await D.call('get_boot'); applySettings(b.settings); $('ver').textContent = 'v' + b.version; showPage(b.settings.start_page || 'dashboard'); } catch (e) { /* defaults */ }
       pollStatus(); setInterval(pollStatus, 1000); pollFrame(); setInterval(refreshBatteryHistory, 20000); setInterval(() => { if (S.page === 'dashboard') refreshLightbar(); }, 10000);
       setInterval(() => { if (S.page === 'bluetooth' && !(S.bt.job && S.bt.job.state === 'running')) refreshBluetooth(); if (S.page === 'gaming') refreshGaming(); }, 6000);
+      setInterval(async () => {
+        if (S.page !== 'mapping' || !S.bridge || !S.mapInfo) return;
+        try { const info = await D.call('get_mapping'); S.mapInfo = info; if (!S.capture) S.mapping = info.mapping; renderMappingLive(); } catch (e) { /* transient */ }
+      }, 2500);
     } else {
       renderStatus({ info: null, nodes: [], battery: null, evdev: true });
       setText('conn-text', 'Preview only'); setText('ctl-name', 'Browser preview');

@@ -8,7 +8,7 @@ cat > "$DIR/ds4-control-center.desktop" <<DESK
 [Desktop Entry]
 Type=Application
 Name=DS4 Control Center
-Comment=DualShock 4 dashboard: live tester, Bluetooth, diagnostics, Steam shortcuts
+Comment=DualShock 4 dashboard: live tester, Bluetooth, any-game support, key mapping
 Exec="$ROOT/run.sh"
 Icon=$ROOT/assets/icon.svg
 Terminal=false

@@ -167,10 +167,14 @@ def scan_nodes(root: Path = SYS_INPUT, dev_root: Path = DEV_INPUT) -> list:
             continue
         real = os.path.realpath(str(ev))
         path = str(dev_root / ev.name)
+        phys = _read(dev / 'phys')
+        if phys.startswith('ds4cc-') or name in ('DS4 Control Center virtual keyboard',
+                                                  'DS4 Control Center virtual mouse'):
+            continue  # never read our own output devices (that would be a feedback loop)
         nodes.append(Node(
             event=ev.name, path=path, name=name,
             vendor=_hex(dev / 'id' / 'vendor'), product=_hex(dev / 'id' / 'product'),
-            bus=_hex(dev / 'id' / 'bustype'), uniq=_read(dev / 'uniq').lower(), phys=_read(dev / 'phys'),
+            bus=_hex(dev / 'id' / 'bustype'), uniq=_read(dev / 'uniq').lower(), phys=phys,
             virtual='/virtual/' in real, role=role,
             readable=os.access(path, os.R_OK), writable=os.access(path, os.W_OK), devdir=str(dev)))
     return nodes
@@ -360,6 +364,10 @@ class ControllerMonitor:
         self._primary_node: Optional[Node] = None
         self._evdev_ok = True
         self._last_active: Optional[float] = None
+        self._outputs: list = []
+        self._grab_wanted = False
+        self._grab_active = False
+        self._grab_error = ''
         self.battery_history = BatteryHistory()
 
     # -- lifecycle -----------------------------------------------------
@@ -405,7 +413,66 @@ class ControllerMonitor:
                 'nodes': [n.public() for n in self._nodes], 'unreadable': list(self._unreadable),
                 'error': self._error, 'evdev': self._evdev_ok,
                 'connected_since': self._connected_since, 'last_input': self._last_input,
+                'grab': {'wanted': self._grab_wanted, 'active': self._grab_active,
+                         'error': self._grab_error},
             }
+
+    def add_output(self, output):
+        """Register a keyboard mapper or virtual pad. It receives semantic events from the reader."""
+        with self._lock:
+            if output not in self._outputs:
+                self._outputs.append(output)
+            if self._info is not None:
+                try:
+                    output.reset()
+                except Exception:
+                    pass
+
+    def set_grab(self, on: bool) -> dict:
+        """Exclusively grab the physical pad, so games do not also see it while a virtual pad/mapper is active."""
+        with self._lock:
+            self._grab_wanted = bool(on)
+            dev = self._primary_dev
+            self._grab_error = ''
+            if dev is not None and self._grab_active == bool(on):
+                return {'ok': True, 'message': 'Controller reservation is unchanged.'}
+        if dev is None:
+            return {'ok': True, 'message': 'The controller will be grabbed when it connects.'}
+        try:
+            if on:
+                dev.grab()
+            else:
+                dev.ungrab()
+            with self._lock:
+                self._grab_active = bool(on)
+            return {'ok': True, 'message': 'The controller is now reserved for this app.' if on
+                    else 'The controller is visible to other programs again.'}
+        except OSError as e:
+            with self._lock:
+                self._grab_error = e.strerror or str(e)
+                self._grab_active = False
+            return {'ok': False, 'message': 'Could not reserve the controller: %s' % (e.strerror or e)}
+
+    def _reset_outputs(self):
+        with self._lock:
+            outputs = list(self._outputs)
+        for output in outputs:
+            try:
+                output.reset()
+            except Exception:
+                pass
+
+    def _feed(self, kind: str, name: str, value):
+        with self._lock:
+            outputs = list(self._outputs)
+        for output in outputs:
+            try:
+                if kind == 'button':
+                    output.feed_button(name, bool(value))
+                else:
+                    output.feed_axis(name, value)
+            except Exception:
+                pass
 
     def last_active(self) -> Optional[float]:
         """Time of the last meaningful input. A held button or stick counts as activity right now."""
@@ -509,6 +576,17 @@ class ControllerMonitor:
                 ai = {code: info for code, info in dev.capabilities().get(EV_ABS, [])}
                 opened[dev.fd] = (dev, node.role, ai)
                 if node is primary:
+                    if self._grab_wanted:
+                        try:
+                            dev.grab()
+                            with self._lock:
+                                self._grab_active = True
+                                self._grab_error = ''
+                        except OSError as e:
+                            with self._lock:
+                                self._grab_active = False
+                                self._grab_error = e.strerror or str(e)
+                            self._log.add('system', 'Could not reserve the controller exclusively: %s' % (e.strerror or e))
                     with self._lock:
                         self._primary_dev = dev
                         self._primary_node = primary
@@ -527,6 +605,7 @@ class ControllerMonitor:
                 self.battery_history.clear()
                 self.battery_history.add(self._battery)
                 self._bump()
+            self._reset_outputs()
             self._log.add('system', 'Connected: %s (%s)' % (primary.name, primary.bus_name))
             if self._on_event:
                 self._on_event('connected', info)
@@ -552,10 +631,12 @@ class ControllerMonitor:
                     dev.close()
                 except Exception:
                     pass
+            self._reset_outputs()
             with self._lock:
                 was = self._info
                 self._primary_dev = None
                 self._primary_node = None
+                self._grab_active = False
                 self._info = None
                 self._battery = None
                 self._connected_since = None
@@ -572,7 +653,10 @@ class ControllerMonitor:
                 if ev.type not in (EV_KEY, EV_ABS):
                     continue
                 self._rate.tick()
+                changes = []
                 with self._lock:
+                    before_down = set(self._state.down)
+                    before_axes = dict(self._state.axes)
                     changed, msg = self._state.apply(role, ev.type, ev.code, ev.value, ai.get(ev.code))
                     if changed:
                         self._bump()
@@ -580,7 +664,16 @@ class ControllerMonitor:
                             self._last_input = time.time()
                             if msg or self._state.is_active():
                                 self._last_active = self._last_input
+                            for name in self._state.down - before_down:
+                                changes.append(('button', name, True))
+                            for name in before_down - self._state.down:
+                                changes.append(('button', name, False))
+                            for name, value in self._state.axes.items():
+                                if before_axes.get(name) != value:
+                                    changes.append(('axis', name, value))
                 if msg:
                     self._log.add('button', msg)
+                for kind, name, value in changes:
+                    self._feed(kind, name, value)
         except BlockingIOError:
             pass

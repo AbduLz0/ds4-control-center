@@ -22,7 +22,8 @@ def os_summary() -> str:
     return platform.platform()
 
 
-def run_checks(monitor_status: dict, bt_status: dict, steam_status: dict) -> list:
+def run_checks(monitor_status: dict, bt_status: dict, steam_status: dict,
+               uinput=None, mapping=None, vpad=None) -> list:
     checks = []
     checks.append(_check('python', 'Python runtime', 'ok', 'Python ' + platform.python_version()))
     if monitor_status.get('evdev', True):
@@ -52,6 +53,32 @@ def run_checks(monitor_status: dict, bt_status: dict, steam_status: dict) -> lis
         if not pads[0].get('writable', True):
             checks.append(_check('rumble', 'Rumble (write access)', 'info', 'The device is read-only for your user, so the rumble test is unavailable.',
                                  'Input still works. Rumble needs the same session-based access that games use.'))
+    if uinput is not None:
+        if uinput.get('available'):
+            checks.append(_check('uinput', 'Virtual input (uinput)', 'ok',
+                                 'Your user can create virtual keyboards, mice and controllers.'))
+        else:
+            checks.append(_check('uinput', 'Virtual input (uinput)', 'warn',
+                                 uinput.get('reason') or 'Your user cannot write to /dev/uinput.',
+                                 'Optional. Keyboard/mouse mode and the any-game Xbox pad need it. '
+                                 'Run ./scripts/enable-uinput.sh once, then log out and back in. '
+                                 'This app never changes system permissions by itself.'))
+    if mapping and (mapping.get('enabled') or mapping.get('desired')):
+        if mapping.get('state') == 'on':
+            checks.append(_check('keymap', 'Keyboard and mouse mode', 'ok',
+                                 'On (preset: %s). %d virtual key(s) held.' %
+                                 (mapping.get('preset', 'custom'), len(mapping.get('held') or []))))
+        else:
+            checks.append(_check('keymap', 'Keyboard and mouse mode', 'fail',
+                                 mapping.get('error') or mapping.get('message') or 'Enabled but not running.',
+                                 'Check the uinput check above, then switch the mode off and on again on the Key mapping page.'))
+    if vpad and (vpad.get('enabled') or vpad.get('desired')):
+        if vpad.get('state') == 'on':
+            checks.append(_check('vpad', 'Virtual Xbox pad', 'ok',
+                                 'On. Games see a standard Microsoft X-Box 360 pad named "%s".' % vpad.get('name')))
+        else:
+            checks.append(_check('vpad', 'Virtual Xbox pad', 'fail',
+                                 vpad.get('error') or vpad.get('message') or 'Enabled but not running.'))
     if info:
         drv = info.get('driver')
         if drv in ('hid-playstation', 'hid-sony'):
