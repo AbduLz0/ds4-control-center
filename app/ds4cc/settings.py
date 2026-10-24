@@ -44,6 +44,12 @@ def _int(lo, hi):
     return lambda v: max(lo, min(hi, int(v)))
 
 
+def _bool(v):
+    if not isinstance(v, bool):
+        raise ValueError('expected true or false')
+    return v
+
+
 def _choice(*options):
     def check(v):
         if v not in options:
@@ -62,21 +68,21 @@ def _hexcolor(v):
 
 SCHEMA = {
     'theme': _choice(*THEMES),
-    'animations': bool,
+    'animations': _bool,
     'refresh_ms': _int(30, 500),
     'deadzone': _int(0, 40),
     'graph_seconds': _int(5, 120),
     'trail_length': _int(0, 200),
-    'auto_start': bool,
-    'start_minimized': bool,
+    'auto_start': _bool,
+    'start_minimized': _bool,
     'start_page': _choice(*PAGES),
-    'auto_reconnect': bool,
+    'auto_reconnect': _bool,
     'reconnect_attempts': _int(1, 10),
-    'diagnostic_logging': bool,
-    'notifications': bool,
+    'diagnostic_logging': _bool,
+    'notifications': _bool,
     'low_battery_percent': _choice(0, 10, 15, 20, 30),
     'idle_disconnect_minutes': _choice(0, 5, 10, 15, 30, 60),
-    'auto_profile': bool,
+    'auto_profile': _bool,
     'lightbar_color': _hexcolor,
 }
 
@@ -109,7 +115,7 @@ class SettingsStore:
             if key in raw:
                 try:
                     data[key] = check(raw[key])
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     pass
         data['games'] = self._clean_games(raw.get('games'))
         data['profiles'] = self._clean_profiles(raw.get('profiles'))
@@ -129,18 +135,25 @@ class SettingsStore:
     def _clean_games(raw) -> list:
         out, seen = [], set()
         for g in raw if isinstance(raw, list) else []:
-            if isinstance(g, dict) and APPID_RE.match(str(g.get('appid', ''))) and g['appid'] not in seen:
-                seen.add(g['appid'])
-                out.append({'appid': str(g['appid']), 'name': str(g.get('name') or 'Steam game')[:80]})
+            if not isinstance(g, dict):
+                continue
+            appid = str(g.get('appid', ''))
+            if APPID_RE.fullmatch(appid) and appid not in seen:
+                seen.add(appid)
+                out.append({'appid': appid, 'name': str(g.get('name') or 'Steam game')[:80]})
         return out
 
     @staticmethod
     def _clean_profiles(raw) -> dict:
         out = {}
         for appid, p in (raw or {}).items() if isinstance(raw, dict) else []:
-            if APPID_RE.match(str(appid)) and isinstance(p, dict):
+            if APPID_RE.fullmatch(str(appid)) and isinstance(p, dict):
                 dz = p.get('deadzone')
-                out[str(appid)] = {'deadzone': None if dz is None else max(0, min(40, int(dz))),
+                try:
+                    dz = None if dz is None else _int(0, 40)(dz)
+                except (ValueError, TypeError, OverflowError):
+                    continue  # one malformed profile must not prevent startup
+                out[str(appid)] = {'deadzone': dz,
                                    'note': str(p.get('note') or '')[:200]}
         return out
 
@@ -159,7 +172,7 @@ class SettingsStore:
                     continue
                 try:
                     clean = check(val)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     continue
                 if self._data.get(key) != clean:
                     self._data[key] = clean

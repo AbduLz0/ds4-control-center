@@ -4,6 +4,13 @@ A desktop dashboard for the Sony DualShock 4 on Linux (built for Zorin OS and ot
 
 Everything on screen comes from the Linux kernel. When something is not available (battery, touchpad, motion, trigger pressure) the app says **unavailable**; it never shows a made-up number or a fake connection.
 
+## Maintenance fixes
+
+- The launcher now defaults to GTK/WebKit, matching the installer. An explicit `PYWEBVIEW_GUI` override is respected, and the launcher no longer disables the Qt browser sandbox.
+- Malformed game profiles and nonfinite numeric settings no longer prevent startup. Boolean preferences require actual `true` or `false` values, and duplicate saved game IDs are normalized.
+- Backend tests isolate autostart changes from your desktop settings and cover startup options and settings recovery.
+- Keep `evdev` on its compatible 1.x series; version 2 requires Python 3.11+, while this app supports Python 3.8+.
+
 ## New in version 0.3
 
 - **Light bar colour.** Colour presets plus a custom picker on the Overview page, remembered and re-applied every time the controller connects. It uses the kernel's LED interface, which most systems make root-only. When your user cannot write to it, the card says so and stays disabled instead of pretending (see Permissions).
@@ -44,6 +51,8 @@ Everything on screen comes from the Linux kernel. When something is not availabl
 `python3-venv python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1 (or -4.0) python3-evdev bluez libnotify-bin`.
 
 Requirements: Zorin OS 17/18 or another Ubuntu/Debian desktop, Python 3.8+, a graphical session. The app refuses to run as root.
+
+GTK is the default renderer. If you have separately installed Qt dependencies, you can select it with `PYWEBVIEW_GUI=qt ./run.sh`. The WebKit graphics workarounds remain enabled by default; set `WEBKIT_DISABLE_COMPOSITING_MODE=0` and/or `WEBKIT_DISABLE_DMABUF_RENDERER=0` to override them when troubleshooting.
 
 ## Using it
 
@@ -107,7 +116,7 @@ tests/                     Backend tests and headless UI test
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v     # 65 backend tests, no hardware needed (one is skipped when run as root)
+python3 -m unittest discover -s tests -v     # backend + launcher tests, no hardware needed
 python3 tests/ui_smoke.py /tmp/shots         # 64 UI checks + screenshots (needs playwright)
 ```
 

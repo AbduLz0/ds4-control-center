@@ -1,10 +1,12 @@
 """Backend tests. They need no hardware: sysfs is faked in a temp directory."""
 import os
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
 
@@ -245,9 +247,60 @@ class SettingsTests(unittest.TestCase):
         s = SettingsStore(self.path)
         s.add_game('10', 'A')
         s.update({'deadzone': 20})
-        d = s.reset()
+        with mock.patch('ds4cc.settings.set_autostart') as autostart:
+            d = s.reset()
+        autostart.assert_called_once_with(False)
         self.assertEqual(d['deadzone'], 8)
         self.assertEqual(len(d['games']), 1)
+
+    def test_malformed_profiles_do_not_prevent_loading_other_settings(self):
+        self.path.write_text(json.dumps({
+            'theme': 'aurora',
+            'profiles': {
+                '10': {'deadzone': 'not a number'},
+                '20': {'deadzone': []},
+                '30': {'deadzone': float('inf')},
+                '40': {'deadzone': 12, 'note': 'keep me'},
+                '50': {'deadzone': None},
+                '60': {'deadzone': 99},
+            },
+        }))
+        d = SettingsStore(self.path).get()
+        self.assertEqual(d['theme'], 'aurora')
+        self.assertEqual(d['profiles'], {
+            '40': {'deadzone': 12, 'note': 'keep me'},
+            '50': {'deadzone': None, 'note': ''},
+            '60': {'deadzone': 40, 'note': ''},
+        })
+
+    def test_nonfinite_numbers_leave_defaults_on_load_and_update(self):
+        self.path.write_text('{"deadzone": 1e999, "refresh_ms": -1e999}')
+        s = SettingsStore(self.path)
+        self.assertEqual((s.get()['deadzone'], s.get()['refresh_ms']), (8, 50))
+        d, changed = s.update({'deadzone': float('inf'), 'refresh_ms': float('nan')})
+        self.assertEqual((d['deadzone'], d['refresh_ms']), (8, 50))
+        self.assertFalse(changed)
+
+    def test_boolean_settings_require_actual_booleans(self):
+        self.path.write_text('{"auto_start": "false", "start_minimized": "false"}')
+        s = SettingsStore(self.path)
+        self.assertFalse(s.get()['auto_start'])
+        self.assertFalse(s.get()['start_minimized'])
+        d, changed = s.update({'animations': [], 'notifications': 0, 'auto_profile': 'false'})
+        self.assertTrue(d['animations'] and d['notifications'] and d['auto_profile'])
+        self.assertFalse(changed)
+        d, changed = s.update({'notifications': False})
+        self.assertFalse(d['notifications'])
+        self.assertEqual(changed, {'notifications'})
+
+    def test_saved_games_normalize_ids_before_deduplicating(self):
+        self.path.write_text(json.dumps({'games': [
+            {'appid': 620, 'name': 'Portal 2'},
+            {'appid': '620', 'name': 'duplicate'},
+            {'appid': '730\n', 'name': 'invalid ID'},
+            {'appid': [], 'name': 'invalid type'},
+        ]}))
+        self.assertEqual(SettingsStore(self.path).get()['games'], [{'appid': '620', 'name': 'Portal 2'}])
 
     def test_autostart_file_lifecycle(self):
         target = Path(self.tmp.name) / 'autostart' / 'x.desktop'
@@ -355,7 +408,6 @@ class SystemCheckTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # version 0.3 features
 # ---------------------------------------------------------------------------
-from unittest import mock  # noqa: E402
 from ds4cc import lightbar, notify, power  # noqa: E402
 from ds4cc import bridge as bridge_mod  # noqa: E402
 
