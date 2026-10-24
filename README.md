@@ -135,6 +135,10 @@ Open the **Troubleshooting** page first, or run `./scripts/diagnose.sh` (read-on
 ## Project layout
 
 ```
+docs/index.html               Product landing page and screenshot gallery
+docs/style.css                Landing-page design system and animations
+docs/script.js                Lightbox, reveals, copy buttons and navigation
+docs/screenshots/             Captures used by the landing page
 index.html                    Pages, dialogs and layout
 assets/css/                   theme.css (tokens, 4 themes), app.css
 assets/js/                    util.js, controller-view.js (SVG), charts.js, app.js
